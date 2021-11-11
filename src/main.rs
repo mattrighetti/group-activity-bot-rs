@@ -23,7 +23,7 @@ async fn run() {
             if let Some(stats) = CHAT_SERVER.get_percent(message.chat_id()) {
                 message.answer(stats.pretty_print()).await?;
             } else {
-                println!("not triggered");
+                message.answer("You first have to write some messages...").await?;
             }
         } else {
             match message.update.kind {
