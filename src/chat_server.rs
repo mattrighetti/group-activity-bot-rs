@@ -32,7 +32,7 @@ impl PrettyPrint for HashMap<String, f32> {
     fn pretty_print(&self) -> String {
         let mut builder = String::new();
         for (k, v) in self {
-            builder.push_str(format!("{}: {:.2}\n", k, v).as_str());
+            builder.push_str(format!("{}: {:.2}%\n", k, v).as_str());
         }
         
         builder
@@ -68,6 +68,16 @@ impl ChatServer {
 
         if let Some(group_hashmap) = lock.get(&chat_id) {
             Some(group_hashmap.into_percent())
+        } else {
+            None
+        }
+    }
+
+    pub fn get_total(&self, chat_id: i64) -> Option<i64> {
+        let lock = self.database.lock().unwrap();
+
+        if let Some(group_hashmap) = lock.get(&chat_id) {
+            Some(group_hashmap.values().sum())
         } else {
             None
         }
