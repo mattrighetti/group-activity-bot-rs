@@ -46,19 +46,19 @@ impl ChatServer {
         }
     }
 
-    pub fn increment(&self, chat_id: i64, username: String) {
+    pub fn increment(&self, chat_id: i64, username: &String) {
         let mut lock = self.database.lock().unwrap();
 
         if let Some(group_hashmap) = lock.get_mut(&chat_id) {
-            if group_hashmap.get(&username).is_some() {
-                let old = group_hashmap.get(&username).unwrap().to_owned();
-                group_hashmap.insert(username, old+1);
+            if group_hashmap.get(username).is_some() {
+                let old = group_hashmap.get(username).unwrap().to_owned();
+                group_hashmap.insert(username.clone(), old+1);
             } else {
-                group_hashmap.insert(username, 1);
+                group_hashmap.insert(username.clone(), 1);
             }
         } else {
             let mut hash = HashMap::new();
-            hash.insert(username, 1);
+            hash.insert(username.clone(), 1);
             lock.insert(chat_id, hash);
         }
     }
