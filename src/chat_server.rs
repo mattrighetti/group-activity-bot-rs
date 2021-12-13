@@ -67,8 +67,9 @@ where
                 builder.push_str("🥉 ")
             }
 
-            builder.push_str(format!("{} {:.2}\n", tuple.0, tuple.1).as_str());
+            builder.push_str(format!("{} {:.2}%\n", tuple.0, tuple.1).as_str());
         }
+        builder.push_str(format!("\n#stats").as_str());
 
         builder
     }
