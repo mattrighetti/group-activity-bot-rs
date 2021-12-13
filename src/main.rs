@@ -1,21 +1,17 @@
+mod handler;
+mod chat_server;
+
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use teloxide::{
+    prelude::*,
     Bot, 
     adaptors::AutoSend, 
     dispatching::{
         Dispatcher, 
         DispatcherHandlerRx
     }, 
-    prelude::{
-        RequesterExt, 
-        StreamExt
-    }, 
     types::Message
 };
-
-mod handler;
-mod chat_server;
-
 use handler::handle;
 
 
