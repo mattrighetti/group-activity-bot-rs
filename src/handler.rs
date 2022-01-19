@@ -1,3 +1,5 @@
+use std::{env, fs::File, io::{BufWriter, Write}, path::PathBuf};
+
 use anyhow::Result;
 use chrono::Local;
 use crate::chat_server::{
@@ -6,7 +8,7 @@ use crate::chat_server::{
 };
 use teloxide::{
     prelude::*, 
-    types::MessageKind::Common, 
+    types::{MessageKind::Common, InputFile}, 
     utils::command::BotCommand
 };
 
@@ -24,6 +26,7 @@ lazy_static! {
 enum Command {
     GroupStats,
     UserStats(String),
+    StatsFile,
 }
 
 pub async fn handle(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()> {
@@ -31,7 +34,7 @@ pub async fn handle(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()> {
     
     // Telegram uses negative numbers for groups' `chat_id`
     if chat_id > 0 {
-        answer(&cx, "This bot is only useful in groups.").await?
+        cx.answer("This bot is only useful in groups.").await?;
     }
 
     let text = match cx.update.text() {
@@ -42,10 +45,13 @@ pub async fn handle(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()> {
     };
 
     let mut response = String::from("");
+    let mut dump = None;
+
     if let Ok(command) = Command::parse(text, "gactivitybot") {
-        response = match command {
-            Command::GroupStats => get_group_stats(chat_id),
-            Command::UserStats(username) => get_user_stats(chat_id, username)
+        match command {
+            Command::GroupStats => response = get_group_stats(chat_id),
+            Command::UserStats(username) => response = get_user_stats(chat_id, username),
+            Command::StatsFile => dump = Some(chat_id)
         }
     } else {
         match &cx.update.kind {
@@ -53,6 +59,7 @@ pub async fn handle(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()> {
                 if let Some(user) = &common_msg.from {
                     if let Some(username) = &user.username {
                         CHAT_SERVER.increment(chat_id, &username);
+                        CHAT_SERVER.add_stats(chat_id, &username);
                     }
                 }
             }
@@ -60,14 +67,11 @@ pub async fn handle(cx: UpdateWithCx<AutoSend<Bot>, Message>) -> Result<()> {
         }
     }
 
-    answer(&cx, response.as_str()).await?;
-
-    Ok(())
-}
-
-async fn answer(cx: &UpdateWithCx<AutoSend<Bot>, Message>, answer: &str) -> Result<()> {
-    if !answer.is_empty() {
-        cx.answer(answer).await?;
+    if !response.is_empty() {
+        cx.answer(response.as_str()).await?;
+    } else if let Some(dump) = dump {
+        let file_path = get_stats_file(dump);
+        cx.answer_document(InputFile::File(file_path)).await?;
     }
 
     Ok(())
@@ -95,3 +99,20 @@ fn get_group_stats(group_id: i64) -> String {
     }
 }
 
+fn get_stats_file(group_id: i64) -> PathBuf {
+    let temp_directory = env::temp_dir();
+    let temp_file = temp_directory.join(format!("{}.csv", group_id));
+
+    // Open a file in write-only (ignoring errors).
+    // This creates the file if it does not exist (and empty the file if it exists).
+    let file = File::create(&temp_file).unwrap();
+    let mut buffer = BufWriter::with_capacity(100, file);
+
+    if let Some(stats) = CHAT_SERVER.get_stats(group_id) {
+        for (username, timestamp) in stats {
+            buffer.write_fmt(format_args!("{},{}\n", username, timestamp)).unwrap();
+        }
+    }
+
+    temp_file
+}

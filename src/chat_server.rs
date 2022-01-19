@@ -4,10 +4,12 @@ use std::fmt::Display;
 use std::sync::{Arc, Mutex};
 
 type ChatDatabase = HashMap<i64, HashMap<String, i64>>;
+type ChatStatsDatabase = HashMap<i64, Vec<(String, String)>>;
 
 #[derive(Debug)]
 pub struct ChatServer {
     pub database: Arc<Mutex<ChatDatabase>>,
+    pub files: Arc<Mutex<ChatStatsDatabase>>
 }
 
 trait IntoPercent {
@@ -79,6 +81,7 @@ impl ChatServer {
     pub fn new() -> Self {
         ChatServer {
             database: Arc::new(Mutex::new(ChatDatabase::new())),
+            files: Arc::new(Mutex::new(ChatStatsDatabase::new()))
         }
     }
 
@@ -115,6 +118,27 @@ impl ChatServer {
             Some(group_hashmap.values().sum())
         } else {
             None
+        }
+    }
+
+    pub fn get_stats(&self, chat_id: i64) -> Option<Vec<(String, String)>> {
+        let lock = self.files.lock().unwrap();
+        if let Some(vec) = lock.get(&chat_id) {
+            return Some(vec.clone());
+        }
+
+        None
+    }
+
+    pub fn add_stats(&self, chat_id: i64, username: &String) {
+        let mut lock = self.files.lock().unwrap();
+
+        if let Some(stats_vec) = lock.get_mut(&chat_id) {
+            stats_vec.push((username.clone(), chrono::offset::Local::now().format("%d-%m-%Y %H:%M:%S").to_string()));
+        } else {
+            let mut stats_vec = Vec::new();
+            stats_vec.push((username.clone(), chrono::offset::Local::now().format("%d-%m-%Y %H:%M:%S").to_string()));
+            lock.insert(chat_id, stats_vec);
         }
     }
 }
