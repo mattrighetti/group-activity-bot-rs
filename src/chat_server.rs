@@ -1,66 +1,22 @@
-use std::cmp::Ordering::Equal;
-use std::collections::HashMap;
-use std::fmt::Display;
 use std::sync::{Arc, Mutex};
+use rusqlite::{Connection, params, Result};
 
-type ChatDatabase = HashMap<i64, HashMap<String, i64>>;
-type ChatStatsDatabase = HashMap<i64, Vec<(String, String)>>;
+use crate::db::get_db;
+
 
 #[derive(Debug)]
 pub struct ChatServer {
-    pub database: Arc<Mutex<ChatDatabase>>,
-    pub files: Arc<Mutex<ChatStatsDatabase>>
-}
-
-trait IntoPercent {
-    fn into_percent(&self) -> HashMap<String, f32>;
+    pub database: Arc<Mutex<Connection>>
 }
 
 pub trait PrettyPrint {
     fn pretty_print(&self) -> String;
 }
 
-trait IntoOrderedVec<T> {
-    fn into_ordered_vec(&self) -> Vec<(&String, &T)>;
-}
-
-impl<T> IntoOrderedVec<T> for HashMap<String, T>
-where
-    T: PartialOrd,
-{
-    fn into_ordered_vec(&self) -> Vec<(&String, &T)> {
-        let mut vec: Vec<(&String, &T)> = self.iter().collect();
-        vec.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(Equal));
-
-        vec
-    }
-}
-
-impl IntoPercent for HashMap<String, i64> {
-    fn into_percent(&self) -> HashMap<String, f32> {
-        let tot: i64 = self.values().sum();
-        let mut result = HashMap::new();
-        for (k, v) in self {
-            result.insert(k.clone(), *v as f32 / tot as f32 * 100.0);
-        }
-
-        result
-    }
-}
-
-impl PrettyPrint for HashMap<String, f32> {
-    fn pretty_print(&self) -> String {
-        self.into_ordered_vec().pretty_print()
-    }
-}
-
-impl<T> PrettyPrint for Vec<(&String, &T)>
-where
-    T: Display,
-{
+impl PrettyPrint for Vec<Data> {
     fn pretty_print(&self) -> String {
         let mut builder = String::new();
-        for (index, tuple) in self.iter().enumerate() {
+        for (index, data) in self.iter().enumerate() {
             if index == 0 {
                 builder.push_str("🥇 ");
             } else if index == 1 {
@@ -69,7 +25,7 @@ where
                 builder.push_str("🥉 ")
             }
 
-            builder.push_str(format!("{} {:.2}%\n", tuple.0, tuple.1).as_str());
+            builder.push_str(format!("{} {:.2}%\n", data.username, data.percent).as_str());
         }
         builder.push_str(format!("\n#stats").as_str());
 
@@ -77,69 +33,94 @@ where
     }
 }
 
+#[derive(Debug, PartialEq)]
+struct Data {
+    username: String,
+    percent: f32,
+}
+
+impl Data {
+    fn percent_str(&self) -> String {
+        format!("{:.2}", self.percent)
+    }
+}
+
 impl ChatServer {
-    pub fn new() -> Self {
+    pub fn new(db_path: String) -> Self {
+        let conn = get_db(Some(db_path.as_str())).unwrap();
+
         ChatServer {
-            database: Arc::new(Mutex::new(ChatDatabase::new())),
-            files: Arc::new(Mutex::new(ChatStatsDatabase::new()))
+            database: Arc::new(Mutex::new(conn))
         }
     }
 
-    pub fn increment(&self, chat_id: i64, username: &String) {
-        let mut lock = self.database.lock().unwrap();
+    pub fn in_memory() -> Self {
+        let conn = get_db(None).unwrap();
 
-        if let Some(group_hashmap) = lock.get_mut(&chat_id) {
-            if group_hashmap.get(username).is_some() {
-                *group_hashmap.get_mut(username).unwrap() += 1;
-            } else {
-                group_hashmap.insert(username.clone(), 1);
-            }
-        } else {
-            let mut hash = HashMap::new();
-            hash.insert(username.clone(), 1);
-            lock.insert(chat_id, hash);
+        ChatServer {
+            database: Arc::new(Mutex::new(conn))
         }
     }
 
-    pub fn get_percent(&self, chat_id: i64) -> Option<HashMap<String, f32>> {
+    pub fn store_msg(&self, chat_id: i64, username: &String) -> Result<()> {
         let lock = self.database.lock().unwrap();
+        let mut stmt = lock.prepare("INSERT INTO message_records(group_id, username) VALUES (?, ?)")?;
+        stmt.execute(params![chat_id, username])?;
 
-        if let Some(group_hashmap) = lock.get(&chat_id) {
-            Some(group_hashmap.into_percent())
-        } else {
-            None
-        }
+        Ok(())
     }
 
-    pub fn get_total(&self, chat_id: i64) -> Option<i64> {
+    pub fn get_tot_msg(&self, chat_id: i64) -> Result<i64> {
         let lock = self.database.lock().unwrap();
+        let mut stmt = lock.prepare(
+            "SELECT count(*)
+            from message_records
+            where group_id = ?;"
+        )?;
 
-        if let Some(group_hashmap) = lock.get(&chat_id) {
-            Some(group_hashmap.values().sum())
-        } else {
-            None
-        }
+        let tot = stmt.query_row([chat_id], |row| Ok(row.get(0)?)).unwrap();
+
+        Ok(tot)
     }
 
-    pub fn get_stats(&self, chat_id: i64) -> Option<Vec<(String, String)>> {
-        let lock = self.files.lock().unwrap();
-        if let Some(vec) = lock.get(&chat_id) {
-            return Some(vec.clone());
-        }
+    fn get_group_percent(&self, chat_id: i64) -> Result<Vec<Data>> {
+        let lock = self.database.lock().unwrap();
+        let mut stmt = lock.prepare(
+            "SELECT username, count(*) * 100.0/ sum(count(*)) over () as percent
+            from message_records
+            where group_id = ?
+            group by group_id, username
+            order by percent desc;"
+        )?;
 
-        None
+        let percents_iter = stmt.query_map([chat_id], |row| {
+            Ok(Data { username: row.get(0)?, percent: row.get(1)? })
+        }).unwrap();
+
+        let perc_vec: Vec<Data> = percents_iter.map(|d| { d.unwrap() }).collect();
+
+        Ok(perc_vec)
     }
 
-    pub fn add_stats(&self, chat_id: i64, username: &String) {
-        let mut lock = self.files.lock().unwrap();
+    pub fn get_group_percent_str(&self, chat_id: i64) -> Result<String> {
+        let data = self.get_group_percent(chat_id)?;
+        
+        Ok(data.pretty_print())
+    }
 
-        if let Some(stats_vec) = lock.get_mut(&chat_id) {
-            stats_vec.push((username.clone(), chrono::offset::Local::now().format("%d-%m-%Y %H:%M:%S").to_string()));
-        } else {
-            let mut stats_vec = Vec::new();
-            stats_vec.push((username.clone(), chrono::offset::Local::now().format("%d-%m-%Y %H:%M:%S").to_string()));
-            lock.insert(chat_id, stats_vec);
-        }
+    pub fn get_user_percent_str(&self, chat_id: i64, username: &String) -> Result<String> {
+        let lock = self.database.lock().unwrap();
+        let mut stmt = lock.prepare(
+            "SELECT mr.username, count(*) * 100.0 / (select count(*) from message_records where group_id = mr.group_id) as percent
+            from message_records as mr
+            where mr.group_id = ? and mr.username = ?;"
+        )?;
+
+        let data = stmt.query_row(params![chat_id, username], |row| {
+            Ok(Data { username: row.get(0)?, percent: row.get(1)? })
+        })?;
+
+        Ok(data.percent_str() + "%")
     }
 }
 
@@ -148,37 +129,53 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_into_percent() {
-        let mut hashmap: HashMap<String, i64> = HashMap::new();
-        hashmap.insert("Mario".to_string(), 10);
-        hashmap.insert("Fausto".to_string(), 10);
-        hashmap.insert("Augusto".to_string(), 129);
+    fn test_insertion() {
+        let cs = ChatServer::in_memory();
 
-        let percent_hashmap = hashmap.into_percent();
-        assert_eq!(
-            percent_hashmap.get("Mario").unwrap().to_owned(),
-            10.0 / 149.0 * 100.0
-        );
-        assert_eq!(
-            percent_hashmap.get("Fausto").unwrap().to_owned(),
-            10.0 / 149.0 * 100.0
-        );
-        assert_eq!(
-            percent_hashmap.get("Augusto").unwrap().to_owned(),
-            129.0 / 149.0 * 100.0
-        );
+        for _ in 0..10 {
+            cs.store_msg(0, &format!("{}", 0)).unwrap();
+        }
+
+        for _ in 0..3 {
+            cs.store_msg(0, &format!("{}", 1)).unwrap();
+        }
+
+        for _ in 0..7 {
+            cs.store_msg(0, &format!("{}", 2)).unwrap();
+        }
+
+        cs.store_msg(0, &format!("{}", 3)).unwrap();
+
+        let tot: f32 = 10.0 + 3.0 + 7.0 + 1.0;
+        let data = cs.get_group_percent(0).unwrap();
+        
+        assert_eq!(data[0].percent_str(), format!("{:.2}", 10.0/tot * 100.0));
+        assert_eq!(data[1].percent_str(), format!("{:.2}", 7.0/tot  * 100.0));
+        assert_eq!(data[2].percent_str(), format!("{:.2}", 3.0/tot  * 100.0));
+        assert_eq!(data[3].percent_str(), format!("{:.2}", 1.0/tot  * 100.0));
     }
 
     #[test]
-    fn test_into_ordered_vec() {
-        let mut hashmap: HashMap<String, i64> = HashMap::new();
-        hashmap.insert("Mario".to_string(), 10);
-        hashmap.insert("Fausto".to_string(), 12);
-        hashmap.insert("Augusto".to_string(), 129);
+    fn test_get_user_percent() {
+        let cs = ChatServer::in_memory();
 
-        let ord_vec = hashmap.into_ordered_vec();
-        assert_eq!(ord_vec[0].0, &"Augusto".to_string());
-        assert_eq!(ord_vec[1].0, &"Fausto".to_string());
-        assert_eq!(ord_vec[2].0, &"Mario".to_string());
+        for _ in 0..10 {
+            cs.store_msg(0, &"0".to_string()).unwrap();
+        }
+
+        for _ in 0..3 {
+            cs.store_msg(0, &"1".to_string()).unwrap();
+        }
+
+        for _ in 0..7 {
+            cs.store_msg(0, &"2".to_string()).unwrap();
+        }
+
+        cs.store_msg(0, &"3".to_string()).unwrap();
+
+        let tot: f32 = 10.0 + 3.0 + 7.0 + 1.0;
+        let percent = cs.get_user_percent_str(0, &String::from("1")).unwrap();
+
+        assert_eq!(percent, format!("{:.2}", 3.0/tot * 100.0));
     }
 }

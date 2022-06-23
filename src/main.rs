@@ -1,40 +1,39 @@
-mod handler;
+pub mod handler;
 mod chat_server;
+mod db;
 
-use tokio_stream::wrappers::UnboundedReceiverStream;
-use teloxide::{
-    prelude::*,
-    Bot, 
-    adaptors::AutoSend, 
-    dispatching::{
-        Dispatcher, 
-        DispatcherHandlerRx
-    }, 
-    types::Message
+use std::{sync::Arc, env};
+use teloxide::prelude::*;
+
+use crate::{
+    handler::handle,
+    chat_server::ChatServer
 };
-use handler::handle;
 
 
 #[tokio::main]
 async fn main() {
+    let log_path = std::env::var("LOG_PATH").unwrap();
+    log4rs::init_file(log_path, Default::default()).unwrap();
     run().await;
 }
 
 async fn run() {
-    teloxide::enable_logging!();
     log::info!("Starting group-activity-bot");
 
     let bot = Bot::from_env().auto_send();
+    let db_path = env::var("DB_PATH").unwrap();
+    let chat_server = Arc::new(ChatServer::new(db_path));
 
-    Dispatcher::new(bot)
-        .messages_handler(handle_message_query)
+    let handler = dptree::entry()
+        .branch(Update::filter_message().endpoint(handle));
+
+    Dispatcher::builder(bot, handler)
+        .dependencies(dptree::deps![chat_server])
+        .build()
+        .setup_ctrlc_handler()
         .dispatch()
         .await;
-}
 
-async fn handle_message_query(rx: DispatcherHandlerRx<AutoSend<Bot>, Message>) {
-    UnboundedReceiverStream::new(rx)
-    .for_each_concurrent(None, |cx| async move {
-        handle(cx).await.expect("Something wrong happened!");
-    }).await;
+    log::info!("Closing bot... Goodbye!");
 }
